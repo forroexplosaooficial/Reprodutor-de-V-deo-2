@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reprodutor de Vídeos Ao Vivo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .player-aspect-box {
+            aspect-ratio: 16 / 8.5;
+            width: 100%;
+            max-width: 1000px;
+            max-height: 92vh;
+            border-radius: 24px;
+            box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.45);
+            transition: border-radius 0.3s ease;
+        }
+
+        .player-aspect-box:fullscreen,
+        .player-aspect-box:-webkit-full-screen {
+            max-width: 100vw !important;
+            max-height: 100vh !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            border-radius: 0 !important;
+        }
+
+        .cards-scroller::-webkit-scrollbar,
+        .modal-scroller::-webkit-scrollbar {
+            width: 5px;
+            height: 5px;
+        }
+        .cards-scroller::-webkit-scrollbar-track,
+        .modal-scroller::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 9999px;
+        }
+        .cards-scroller::-webkit-scrollbar-thumb,
+        .modal-scroller::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.25);
+            border-radius: 9999px;
+        }
+        .cards-scroller::-webkit-scrollbar-thumb:hover,
+        .modal-scroller::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.45);
+        }
+
+        .modal-scroller {
+            max-height: 82vh;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
+            scroll-behavior: smooth;
+        }
+
+        .ambient-backdrop {
+            background: radial-gradient(circle at 50% 42%, rgba(196, 128, 56, 0.52) 0%, rgba(112, 66, 28, 0.32) 34%, rgba(10, 16, 24, 0.96) 72%, #070b10 100%);
+        }
+
+        .hud-layer {
+            transition: opacity 0.32s cubic-bezier(0.4, 0, 0.2, 1), transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .hud-hidden-top {
+            opacity: 0 !important;
+            transform: translateY(-14px);
+            pointer-events: none !important;
+        }
+        .hud-hidden-bottom {
+            opacity: 0 !important;
+            transform: translateY(18px);
+            pointer-events: none !important;
+        }
+        .hud-hidden-fade {
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }
+    </style>
+</head>
+<body class="w-screen h-screen flex items-center justify-center p-3 sm:p-6 select-none">
+
+    <!-- Container Principal Único: Reprodutor de Vídeos -->
+    <div id="mainPlayerContainer" class="player-aspect-box relative overflow-hidden bg-[#070b10] flex flex-col justify-between">
+        
+        <!-- Camada de Fundo Desfocado -->
+        <div id="ambientFallback" class="ambient-backdrop absolute inset-0 z-0 transition-opacity duration-500">
+            <div class="absolute inset-0 backdrop-blur-3xl opacity-90"></div>
+        </div>
+
+        <!-- Camada de Vídeo Nativo / HLS (MP4, WebM, M3U8) -->
+        <video id="nativeVideoPlayer" class="hidden absolute inset-0 w-full h-full object-cover z-0 bg-black" playsinline controls></video>
+
+        <!-- Camada de Vídeo YouTube (Iframe) -->
+        <div id="youtubeContainer" class="hidden absolute inset-0 w-full h-full z-0 bg-black">
+            <iframe id="youtubeIframe" class="w-full h-full border-0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+        </div>
+
+        <!-- Camada Transparente de Interceptação (Modo Cinema) -->
+        <div id="restoreUiOverlay" class="hidden absolute inset-0 z-30 cursor-pointer bg-transparent" title="Toque ou clique para mostrar os controles"></div>
+
+        <!-- Gradientes superior e inferior -->
+        <div id="topGradient" class="hud-layer pointer-events-none absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/65 via-black/25 to-transparent z-10"></div>
+        <div id="bottomGradient" class="hud-layer pointer-events-none absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black/90 via-black/50 to-transparent z-10"></div>
+
+        <!-- Barra Superior Interna -->
+        <div id="topHudBar" class="hud-layer relative z-20 flex items-center justify-between gap-2 px-4 pt-4 sm:px-7 sm:pt-6">
+            <!-- Selo Vermelho AO VIVO -->
+            <div class="inline-flex items-center gap-2 bg-[#e11d2b] text-white font-extrabold tracking-wider text-xs sm:text-sm px-3.5 py-2 sm:px-5 sm:py-2.5 rounded-2xl shadow-lg flex-shrink-0">
+                <span class="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-white animate-pulse"></span>
+                <span>AO VIVO</span>
+            </div>
+
+            <!-- Título do Vídeo Atual -->
+            <div id="nowPlayingBadge" class="hidden lg:flex items-center gap-2 px-4 py-1.5 rounded-full bg-black/45 backdrop-blur-md border border-white/10 text-white/90 text-xs font-medium max-w-xs truncate">
+                <span class="text-white/50">Reproduzindo:</span>
+                <span id="nowPlayingTitle" class="truncate font-semibold text-white">Carregando...</span>
+            </div>
+
+            <!-- Grupo de Controles Superiores Direitos -->
+            <div class="flex items-center gap-1.5 sm:gap-2">
+                <!-- Botão Adicionar Novo Card -->
+                <button id="openAddModalBtn" type="button" title="Adicionar novo card de vídeo" class="inline-flex items-center gap-1.5 bg-white/15 hover:bg-white/25 active:scale-95 text-white text-xs sm:text-sm font-semibold px-3 py-2 sm:px-3.5 sm:py-2.5 rounded-xl sm:rounded-2xl backdrop-blur-md border border-white/15 transition-all cursor-pointer shadow-md">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    <span class="hidden sm:inline">Adicionar Card</span>
+                </button>
+
+                <!-- 1) Botão Ocultar Interface -->
+                <button id="hideUiBtn" type="button" title="Ocultar interface (Modo Cinema)" aria-label="Ocultar interface" class="p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-white/15 hover:bg-white/25 active:scale-95 text-white backdrop-blur-md border border-white/15 transition-all cursor-pointer shadow-md">
+                    <svg class="w-4 h-4 sm:w-[18px] sm:h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
+                    </svg>
+                </button>
+
+                <!-- 2) Botão Picture-in-Picture (PiP) -->
+                <button id="pipBtn" type="button" title="Picture-in-Picture (Janela Flutuante)" aria-label="Picture-in-Picture" class="p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-white/15 hover:bg-white/25 active:scale-95 text-white backdrop-blur-md border border-white/15 transition-all cursor-pointer shadow-md">
+                    <svg class="w-4 h-4 sm:w-[18px] sm:h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <rect x="3" y="4" width="18" height="14" rx="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <rect x="11" y="10" width="8" height="6" rx="1.2" fill="currentColor" stroke="none"/>
+                    </svg>
+                </button>
+
+                <!-- 3) Botão Tela Cheia (Fullscreen) -->
+                <button id="fullscreenBtn" type="button" title="Tela Cheia" aria-label="Tela Cheia" class="p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-white/15 hover:bg-white/25 active:scale-95 text-white backdrop-blur-md border border-white/15 transition-all cursor-pointer shadow-md">
+                    <svg id="fullscreenExpandIcon" class="w-4 h-4 sm:w-[18px] sm:h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                    </svg>
+                    <svg id="fullscreenCompressIcon" class="hidden w-4 h-4 sm:w-[18px] sm:h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Faixa Horizontal Rolável de Cards na Parte Inferior Interna -->
+        <div id="bottomHudBar" class="hud-layer relative z-20 px-4 pb-4 sm:px-7 sm:pb-6 w-full">
+            <div id="cardsTrack" class="cards-scroller flex items-center gap-3 sm:gap-4 overflow-x-auto pb-1.5 pt-1">
+                <!-- Os cards são renderizados dinamicamente via JavaScript -->
+            </div>
+        </div>
+
+        <!-- Overlay / Modal Interno Compacto para Adicionar Novo Card (Exige Usuário e Senha do Dono) -->
+        <div id="addCardModal" class="hidden absolute inset-0 z-40 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 transition-opacity overflow-y-auto">
+            <div id="addCardModalBox" class="modal-scroller w-full max-w-md bg-[#121721]/95 border border-white/15 rounded-3xl p-5 sm:p-6 shadow-2xl text-white my-auto">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-base sm:text-lg font-bold tracking-tight">Adicionar Novo Card</h2>
+                    <button id="closeAddModalBtn" type="button" class="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white/80 hover:text-white transition cursor-pointer" title="Fechar">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+
+                <form id="addCardForm" class="space-y-3">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label for="ownerUserInput" class="block text-xs font-semibold text-white/75 mb-1">Usuário do Dono</label>
+                            <input id="ownerUserInput" type="text" required autocomplete="username" placeholder="Usuário" class="w-full bg-white/10 border border-white/15 focus:border-red-500 focus:outline-none rounded-xl px-3.5 py-2 text-sm text-white placeholder-white/40 transition">
+                        </div>
+                        <div>
+                            <label for="ownerPassInput" class="block text-xs font-semibold text-white/75 mb-1">Senha do Dono</label>
+                            <input id="ownerPassInput" type="password" required autocomplete="current-password" placeholder="Senha" class="w-full bg-white/10 border border-white/15 focus:border-red-500 focus:outline-none rounded-xl px-3.5 py-2 text-sm text-white placeholder-white/40 transition">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label for="cardTitleInput" class="block text-xs font-semibold text-white/75 mb-1">Título do Canal ou Vídeo</label>
+                        <input id="cardTitleInput" type="text" required placeholder="Ex: Canal Ao Vivo HD" class="w-full bg-white/10 border border-white/15 focus:border-red-500 focus:outline-none rounded-xl px-3.5 py-2 text-sm text-white placeholder-white/40 transition">
+                    </div>
+
+                    <div>
+                        <label for="cardUrlInput" class="block text-xs font-semibold text-white/75 mb-1">Link da URL (M3U8, MP4, WebM ou YouTube)</label>
+                        <input id="cardUrlInput" type="url" required placeholder="https://.../playlist.m3u8 ou YouTube" class="w-full bg-white/10 border border-white/15 focus:border-red-500 focus:outline-none rounded-xl px-3.5 py-2 text-sm text-white placeholder-white/40 transition">
+                    </div>
+
+                    <p id="formErrorMsg" class="hidden text-xs text-red-400 font-medium"></p>
+
+                    <div class="flex items-center justify-end gap-2.5 pt-2">
+                        <button type="button" id="cancelAddModalBtn" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-white/10 hover:bg-white/20 text-white/85 transition cursor-pointer">
+                            Cancelar
+                        </button>
+                        <button type="submit" class="px-5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-[#e11d2b] hover:bg-[#c81724] text-white shadow-lg transition cursor-pointer">
+                            Salvar Card
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Overlay / Modal Interno para Autenticar Remoção de Card -->
+        <div id="removeAuthModal" class="hidden absolute inset-0 z-40 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 transition-opacity overflow-y-auto">
+            <div class="modal-scroller w-full max-w-sm bg-[#121721]/95 border border-white/15 rounded-3xl p-5 sm:p-6 shadow-2xl text-white my-auto">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-base font-bold tracking-tight">Remover Card</h2>
+                    <button id="closeRemoveModalBtn" type="button" class="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white/80 hover:text-white transition cursor-pointer" title="Fechar">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+
+                <p id="removeCardTargetLabel" class="text-xs text-white/70 mb-3.5 truncate"></p>
+
+                <form id="removeCardForm" class="space-y-3">
+                    <div>
+                        <label for="removeUserInput" class="block text-xs font-semibold text-white/75 mb-1">Usuário do Dono</label>
+                        <input id="removeUserInput" type="text" required autocomplete="username" placeholder="Usuário" class="w-full bg-white/10 border border-white/15 focus:border-red-500 focus:outline-none rounded-xl px-3.5 py-2 text-sm text-white placeholder-white/40 transition">
+                    </div>
+
+                    <div>
+                        <label for="removePassInput" class="block text-xs font-semibold text-white/75 mb-1">Senha do Dono</label>
+                        <input id="removePassInput" type="password" required autocomplete="current-password" placeholder="Senha" class="w-full bg-white/10 border border-white/15 focus:border-red-500 focus:outline-none rounded-xl px-3.5 py-2 text-sm text-white placeholder-white/40 transition">
+                    </div>
+
+                    <p id="removeErrorMsg" class="hidden text-xs text-red-400 font-medium"></p>
+
+                    <div class="flex items-center justify-end gap-2.5 pt-2">
+                        <button type="button" id="cancelRemoveModalBtn" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-white/10 hover:bg-white/20 text-white/85 transition cursor-pointer">
+                            Cancelar
+                        </button>
+                        <button type="submit" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-red-600 hover:bg-red-700 text-white shadow-lg transition cursor-pointer">
+                            Confirmar Remoção
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Notificação interna discreta -->
+        <div id="toastNotification" class="hidden absolute top-16 sm:top-20 left-1/2 -translate-x-1/2 z-50 bg-black/85 border border-white/15 text-white text-xs font-medium px-4 py-2 rounded-full shadow-xl backdrop-blur-md text-center max-w-[90%]"></div>
+    </div>
+
+    <script>
+        // Credenciais do dono do aplicativo para criar e remover cards
+        const OWNER_CREDENTIALS = {
+            username: 'admin',
+            password: '1540'
+        };
+
+        const STORAGE_KEY = 'live_player_video_cards_v2';
+
+        const defaultCards = [
+            {
+                id: 'card-1',
+                title: 'Tv Padre Cicero',
+                url: 'https://video01.logicahost.com.br/tvpadrecicero/tvpadrecicero/playlist.m3u8'
+            },
+            {
+                id: 'card-2',
+                title: 'Uma Tv',
+                url: 'https://umatv.nuvemplay.live/hls/stream.m3u8'
+            },
+            {
+                id: 'card-3',
+                title: 'VejaTv',
+                url: 'https://gpa-vja.otteravision.com/gpa/vja/vja.m3u8'
+            },
+            {   id: 'card-4',
+                title: 'Tv Universal',
+                url: 'https://644398c.ha.azioncdn.net/primary/tvuniversal_480p.sdp/playlist.m3u8'
+            },
+            {   id: 'card-5',
+                title: 'Classique Tv',
+                url: 'https://stmv1.srvif.com/classique/classique/playlist.m3u8'
+            }
+        ];
+
+        let videoCards = [];
+        let activeCardId = 'card-1';
+        let isUiHidden = false;
+        let hlsInstance = null;
+        let pendingRemoveCardId = null;
+
+        // Referências do DOM
+        const mainPlayerContainer = document.getElementById('mainPlayerContainer');
+        const cardsTrack = document.getElementById('cardsTrack');
+        const ambientFallback = document.getElementById('ambientFallback');
+        const nativeVideoPlayer = document.getElementById('nativeVideoPlayer');
+        const youtubeContainer = document.getElementById('youtubeContainer');
+        const youtubeIframe = document.getElementById('youtubeIframe');
+        const nowPlayingTitle = document.getElementById('nowPlayingTitle');
+
+        // Referências da Interface Sobreposta (HUD) e Botões
+        const topHudBar = document.getElementById('topHudBar');
+        const bottomHudBar = document.getElementById('bottomHudBar');
+        const topGradient = document.getElementById('topGradient');
+        const bottomGradient = document.getElementById('bottomGradient');
+        const restoreUiOverlay = document.getElementById('restoreUiOverlay');
+
+        const hideUiBtn = document.getElementById('hideUiBtn');
+        const pipBtn = document.getElementById('pipBtn');
+        const fullscreenBtn = document.getElementById('fullscreenBtn');
+        const fullscreenExpandIcon = document.getElementById('fullscreenExpandIcon');
+        const fullscreenCompressIcon = document.getElementById('fullscreenCompressIcon');
+
+        // Referências do Modal de Criação
+        const addCardModal = document.getElementById('addCardModal');
+        const addCardModalBox = document.getElementById('addCardModalBox');
+        const openAddModalBtn = document.getElementById('openAddModalBtn');
+        const closeAddModalBtn = document.getElementById('closeAddModalBtn');
+        const cancelAddModalBtn = document.getElementById('cancelAddModalBtn');
+        const addCardForm = document.getElementById('addCardForm');
+        const ownerUserInput = document.getElementById('ownerUserInput');
+        const ownerPassInput = document.getElementById('ownerPassInput');
+        const cardTitleInput = document.getElementById('cardTitleInput');
+        const cardUrlInput = document.getElementById('cardUrlInput');
+        const formErrorMsg = document.getElementById('formErrorMsg');
+
+        // Referências do Modal de Remoção
+        const removeAuthModal = document.getElementById('removeAuthModal');
+        const closeRemoveModalBtn = document.getElementById('closeRemoveModalBtn');
+        const cancelRemoveModalBtn = document.getElementById('cancelRemoveModalBtn');
+        const removeCardForm = document.getElementById('removeCardForm');
+        const removeCardTargetLabel = document.getElementById('removeCardTargetLabel');
+        const removeUserInput = document.getElementById('removeUserInput');
+        const removePassInput = document.getElementById('removePassInput');
+        const removeErrorMsg = document.getElementById('removeErrorMsg');
+
+        const toastNotification = document.getElementById('toastNotification');
+
+        function hasOwnerAccess(username, password) {
+            return username === OWNER_CREDENTIALS.username && password === OWNER_CREDENTIALS.password;
+        }
+
+        function loadCards() {
+            try {
+                const saved = localStorage.getItem(STORAGE_KEY);
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        videoCards = parsed;
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.warn('Falha ao ler localStorage:', e);
+            }
+            videoCards = [...defaultCards];
+        }
+
+        function saveCards() {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(videoCards));
+            } catch (e) {
+                console.warn('Falha ao salvar no localStorage:', e);
+            }
+        }
+
+        function extractYouTubeId(url) {
+            if (!url) return null;
+            const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|live|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+            const match = url.match(regExp);
+            return match ? match[1] : null;
+        }
+
+        function isHlsStream(url) {
+            if (!url) return false;
+            return /\.m3u8(\?.*)?$/i.test(url.trim());
+        }
+
+        let toastTimeout;
+        function showToast(message) {
+            toastNotification.textContent = message;
+            toastNotification.classList.remove('hidden');
+            clearTimeout(toastTimeout);
+            toastTimeout = setTimeout(() => {
+                toastNotification.classList.add('hidden');
+            }, 3200);
+        }
+
+        // =========================================================================
+        // 1) OCULTAR / RESTAURAR INTERFACE (MODO CINEMA)
+        // =========================================================================
+        function hideInterface() {
+            if (isUiHidden) return;
+            isUiHidden = true;
+
+            topHudBar.classList.add('hud-hidden-top');
+            bottomHudBar.classList.add('hud-hidden-bottom');
+            topGradient.classList.add('hud-hidden-fade');
+            bottomGradient.classList.add('hud-hidden-fade');
+
+            restoreUiOverlay.classList.remove('hidden');
+            showToast('Interface oculta. Toque na tela para reexibir.');
+        }
+
+        function restoreInterface(event) {
+            if (!isUiHidden) return;
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            isUiHidden = false;
+
+            topHudBar.classList.remove('hud-hidden-top');
+            bottomHudBar.classList.remove('hud-hidden-bottom');
+            topGradient.classList.remove('hud-hidden-fade');
+            bottomGradient.classList.remove('hud-hidden-fade');
+
+            restoreUiOverlay.classList.add('hidden');
+        }
+
+        hideUiBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            hideInterface();
+        });
+
+        restoreUiOverlay.addEventListener('touchend', restoreInterface, { passive: false });
+        restoreUiOverlay.addEventListener('click', restoreInterface);
+
+        // =========================================================================
+        // 2) PICTURE-IN-PICTURE (PiP)
+        // =========================================================================
+        async function togglePictureInPicture() {
+            const isNativeVideoVisible = !nativeVideoPlayer.classList.contains('hidden');
+            const isYouTubeVisible = !youtubeContainer.classList.contains('hidden');
+
+            if (isYouTubeVisible) {
+                showToast('O Picture-in-Picture está disponível para transmissões ao vivo (M3U8) e vídeos MP4.');
+                return;
+            }
+
+            if (!isNativeVideoVisible || (!nativeVideoPlayer.src && !hlsInstance)) {
+                showToast('Inicie uma transmissão ou vídeo para ativar o Picture-in-Picture.');
+                return;
+            }
+
+            if (!document.pictureInPictureEnabled && !nativeVideoPlayer.webkitSetPresentationMode) {
+                showToast('Seu navegador não suporta Picture-in-Picture.');
+                return;
+            }
+
+            try {
+                if (document.pictureInPictureElement) {
+                    await document.exitPictureInPicture();
+                } else if (nativeVideoPlayer.requestPictureInPicture) {
+                    await nativeVideoPlayer.requestPictureInPicture();
+                } else if (nativeVideoPlayer.webkitSetPresentationMode) {
+                    const mode = nativeVideoPlayer.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture';
+                    nativeVideoPlayer.webkitSetPresentationMode(mode);
+                }
+            } catch (err) {
+                console.warn('Erro ao alternar PiP:', err);
+                showToast('Dê play no vídeo antes de ativar o Picture-in-Picture.');
+            }
+        }
+
+        pipBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            togglePictureInPicture();
+        });
+
+        nativeVideoPlayer.addEventListener('enterpictureinpicture', () => {
+            pipBtn.classList.add('bg-[#e11d2b]', 'border-red-400');
+            pipBtn.classList.remove('bg-white/15');
+        });
+
+        nativeVideoPlayer.addEventListener('leavepictureinpicture', () => {
+            pipBtn.classList.remove('bg-[#e11d2b]', 'border-red-400');
+            pipBtn.classList.add('bg-white/15');
+        });
+
+        // =========================================================================
+        // 3) TELA CHEIA (FULLSCREEN)
+        // =========================================================================
+        function updateFullscreenIcons() {
+            const isFs = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+            if (isFs) {
+                fullscreenExpandIcon.classList.add('hidden');
+                fullscreenCompressIcon.classList.remove('hidden');
+                fullscreenBtn.title = 'Sair da Tela Cheia';
+            } else {
+                fullscreenExpandIcon.classList.remove('hidden');
+                fullscreenCompressIcon.classList.add('hidden');
+                fullscreenBtn.title = 'Tela Cheia';
+            }
+        }
+
+        async function toggleFullscreen() {
+            const isFs = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+            try {
+                if (!isFs) {
+                    if (mainPlayerContainer.requestFullscreen) {
+                        await mainPlayerContainer.requestFullscreen();
+                    } else if (mainPlayerContainer.webkitRequestFullscreen) {
+                        await mainPlayerContainer.webkitRequestFullscreen();
+                    }
+                } else {
+                    if (document.exitFullscreen) {
+                        await document.exitFullscreen();
+                    } else if (document.webkitExitFullscreen) {
+                        await document.webkitExitFullscreen();
+                    }
+                }
+            } catch (err) {
+                console.warn('Erro ao alternar tela cheia:', err);
+                showToast('Não foi possível ativar a tela cheia neste ambiente.');
+            }
+        }
+
+        fullscreenBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleFullscreen();
+        });
+
+        document.addEventListener('fullscreenchange', updateFullscreenIcons);
+        document.addEventListener('webkitfullscreenchange', updateFullscreenIcons);
+
+        // =========================================================================
+        // REPRODUÇÃO (YOUTUBE, HLS .M3U8 E MP4/WEBM) E GERENCIAMENTO DOS CARDS
+        // =========================================================================
+        function destroyHls() {
+            if (hlsInstance) {
+                hlsInstance.destroy();
+                hlsInstance = null;
+            }
+        }
+
+        function playCard(card) {
+            activeCardId = card.id;
+            nowPlayingTitle.textContent = card.title;
+
+            if (document.pictureInPictureElement) {
+                document.exitPictureInPicture().catch(() => {});
+            }
+
+            destroyHls();
+            nativeVideoPlayer.pause();
+            nativeVideoPlayer.removeAttribute('src');
+            nativeVideoPlayer.load();
+            nativeVideoPlayer.classList.add('hidden');
+
+            youtubeIframe.src = '';
+            youtubeContainer.classList.add('hidden');
+
+            if (!card.url || card.isAmbientDefault) {
+                ambientFallback.classList.remove('opacity-0');
+                renderCards();
+                return;
+            }
+
+            const ytId = extractYouTubeId(card.url);
+
+            if (ytId) {
+                ambientFallback.classList.add('opacity-0');
+                youtubeContainer.classList.remove('hidden');
+                youtubeIframe.src = `https://www.youtube.com/embed/${ytId}?autoplay=1&rel=0&modestbranding=1`;
+            } else if (isHlsStream(card.url)) {
+                ambientFallback.classList.add('opacity-0');
+                nativeVideoPlayer.classList.remove('hidden');
+
+                if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+                    hlsInstance = new Hls({
+                        enableWorker: true,
+                        lowLatencyMode: true
+                    });
+                    hlsInstance.loadSource(card.url);
+                    hlsInstance.attachMedia(nativeVideoPlayer);
+
+                    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+                        nativeVideoPlayer.play().catch(() => {
+                            showToast('Toque no vídeo para iniciar a transmissão.');
+                        });
+                    });
+
+                    hlsInstance.on(Hls.Events.ERROR, (event, data) => {
+                        if (data.fatal) {
+                            switch (data.type) {
+                                case Hls.ErrorTypes.NETWORK_ERROR:
+                                    showToast('Erro de conexão ou bloqueio CORS no sinal deste canal.');
+                                    hlsInstance.startLoad();
+                                    break;
+                                case Hls.ErrorTypes.MEDIA_ERROR:
+                                    hlsInstance.recoverMediaError();
+                                    break;
+                                default:
+                                    destroyHls();
+                                    showToast('Sinal indisponível no momento.');
+                                    break;
+                            }
+                        }
+                    });
+                } else if (nativeVideoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
+                    nativeVideoPlayer.src = card.url;
+                    nativeVideoPlayer.addEventListener('loadedmetadata', () => {
+                        nativeVideoPlayer.play().catch(() => {
+                            showToast('Toque no vídeo para iniciar a transmissão.');
+                        });
+                    }, { once: true });
+                } else {
+                    showToast('Seu navegador não suporta transmissões HLS (.m3u8).');
+                }
+            } else {
+                ambientFallback.classList.add('opacity-0');
+                nativeVideoPlayer.classList.remove('hidden');
+                nativeVideoPlayer.src = card.url;
+                nativeVideoPlayer.play().catch(() => {
+                    showToast('Clique no vídeo para iniciar a reprodução.');
+                });
+            }
+
+            renderCards();
+        }
+
+        // Solicita usuário e senha do dono antes de remover um card
+        function requestRemoveCard(event, id) {
+            event.stopPropagation();
+            if (videoCards.length <= 1) {
+                showToast('Mantenha pelo menos 1 card no reprodutor.');
+                return;
+            }
+
+            const targetCard = videoCards.find(c => c.id === id);
+            if (!targetCard) return;
+
+            pendingRemoveCardId = id;
+            removeCardTargetLabel.textContent = `Card selecionado: "${targetCard.title}"`;
+            removeErrorMsg.classList.add('hidden');
+            removeUserInput.value = '';
+            removePassInput.value = '';
+            removeAuthModal.classList.remove('hidden');
+            setTimeout(() => removeUserInput.focus(), 50);
+        }
+
+        function closeRemoveModal() {
+            pendingRemoveCardId = null;
+            removeAuthModal.classList.add('hidden');
+        }
+
+        closeRemoveModalBtn.addEventListener('click', closeRemoveModal);
+        cancelRemoveModalBtn.addEventListener('click', closeRemoveModal);
+        removeAuthModal.addEventListener('click', (e) => {
+            if (e.target === removeAuthModal) closeRemoveModal();
+        });
+
+        removeCardForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const username = removeUserInput.value.trim();
+            const password = removePassInput.value;
+
+            if (!hasOwnerAccess(username, password)) {
+                removeErrorMsg.textContent = 'Usuário ou senha do dono incorretos.';
+                removeErrorMsg.classList.remove('hidden');
+                return;
+            }
+
+            const idToRemove = pendingRemoveCardId;
+            const index = videoCards.findIndex(c => c.id === idToRemove);
+            closeRemoveModal();
+
+            if (index === -1) return;
+
+            videoCards.splice(index, 1);
+            saveCards();
+
+            if (activeCardId === idToRemove) {
+                playCard(videoCards[0]);
+            } else {
+                renderCards();
+            }
+            showToast('Card removido.');
+        });
+
+        function renderCards() {
+            cardsTrack.innerHTML = '';
+
+            videoCards.forEach((card) => {
+                const isActive = card.id === activeCardId;
+                const ytId = extractYouTubeId(card.url);
+                const isHls = isHlsStream(card.url);
+                const thumbUrl = ytId ? `https://img.youtube.com/vi/${ytId}/mqdefault.jpg` : null;
+
+                let sourceLabel = 'Sinal Ambiente';
+                if (ytId) sourceLabel = 'YouTube';
+                else if (isHls) sourceLabel = 'Stream Ao Vivo • HLS';
+                else if (card.url) sourceLabel = 'Vídeo Direto';
+
+                const cardEl = document.createElement('div');
+                cardEl.className = `group relative flex-shrink-0 w-44 sm:w-52 rounded-2xl p-2.5 transition-all duration-200 cursor-pointer backdrop-blur-md border ${
+                    isActive
+                        ? 'bg-white/20 border-red-500 shadow-[0_0_20px_rgba(225,29,43,0.4)] scale-[1.02]'
+                        : 'bg-black/55 hover:bg-white/15 border-white/15 hover:border-white/30'
+                }`;
+
+                cardEl.onclick = () => playCard(card);
+
+                const mediaPreviewHTML = thumbUrl
+                    ? `<img src="${thumbUrl}" alt="${card.title}" onerror="this.style.display='none'" class="w-full h-full object-cover opacity-80 group-hover:scale-105 transition-transform duration-300">`
+                    : `<div class="w-full h-full bg-gradient-to-br from-[#2a1c12] via-[#161e29] to-[#0b0f17]"></div>`;
+
+                cardEl.innerHTML = `
+                    <div class="relative w-full h-16 sm:h-20 rounded-xl overflow-hidden bg-black/60 mb-2 flex items-center justify-center">
+                        ${mediaPreviewHTML}
+                        <div class="absolute inset-0 bg-black/25 group-hover:bg-black/10 transition"></div>
+                        
+                        <div class="absolute w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center shadow-lg transition-transform group-hover:scale-110 ${
+                            isActive ? 'bg-[#e11d2b] text-white' : 'bg-white/90 text-gray-900'
+                        }">
+                            <svg class="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z"/>
+                            </svg>
+                        </div>
+
+                        ${isActive ? `<span class="absolute top-1.5 left-1.5 bg-[#e11d2b] text-white text-[9px] font-bold px-1.5 py-0.5 rounded-md tracking-wider uppercase">No Ar</span>` : ''}
+
+                        <button type="button" title="Remover card (requer login do dono)" class="remove-card-btn opacity-80 sm:opacity-0 group-hover:opacity-100 absolute top-1.5 right-1.5 w-6 h-6 rounded-lg bg-black/75 hover:bg-red-600 text-white flex items-center justify-center transition cursor-pointer">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="px-0.5">
+                        <p class="text-white text-xs sm:text-[13px] font-semibold truncate leading-snug" title="${card.title}">
+                            ${card.title}
+                        </p>
+                        <p class="text-white/55 text-[10px] truncate mt-0.5">
+                            ${sourceLabel}
+                        </p>
+                    </div>
+                `;
+
+                const removeBtn = cardEl.querySelector('.remove-card-btn');
+                removeBtn.addEventListener('click', (e) => requestRemoveCard(e, card.id));
+
+                cardsTrack.appendChild(cardEl);
+            });
+
+            const quickAddCard = document.createElement('button');
+            quickAddCard.type = 'button';
+            quickAddCard.className = 'flex-shrink-0 w-28 sm:w-32 h-[106px] sm:h-[124px] rounded-2xl border border-dashed border-white/25 hover:border-white/60 bg-white/5 hover:bg-white/10 backdrop-blur-md flex flex-col items-center justify-center gap-1.5 text-white/75 hover:text-white transition cursor-pointer';
+            quickAddCard.innerHTML = `
+                <div class="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                </div>
+                <span class="text-[11px] font-semibold">Novo Card</span>
+            `;
+            quickAddCard.onclick = openModal;
+            cardsTrack.appendChild(quickAddCard);
+        }
+
+        // Controles do Modal Interno de Criação
+        function openModal() {
+            formErrorMsg.classList.add('hidden');
+            ownerUserInput.value = '';
+            ownerPassInput.value = '';
+            cardTitleInput.value = '';
+            cardUrlInput.value = '';
+            addCardModal.classList.remove('hidden');
+            addCardModal.scrollTop = 0;
+            addCardModalBox.scrollTop = 0;
+            setTimeout(() => {
+                addCardModalBox.scrollTo({ top: 0, behavior: 'smooth' });
+                ownerUserInput.focus();
+            }, 50);
+        }
+
+        function closeModal() {
+            addCardModal.classList.add('hidden');
+        }
+
+        openAddModalBtn.addEventListener('click', openModal);
+        closeAddModalBtn.addEventListener('click', closeModal);
+        cancelAddModalBtn.addEventListener('click', closeModal);
+
+        addCardModal.addEventListener('click', (e) => {
+            if (e.target === addCardModal) closeModal();
+        });
+
+        addCardForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const username = ownerUserInput.value.trim();
+            const password = ownerPassInput.value;
+            const title = cardTitleInput.value.trim();
+            const url = cardUrlInput.value.trim();
+
+            if (!hasOwnerAccess(username, password)) {
+                formErrorMsg.textContent = 'Usuário ou senha do dono incorretos.';
+                formErrorMsg.classList.remove('hidden');
+                return;
+            }
+
+            if (!title || !url) {
+                formErrorMsg.textContent = 'Preencha o título e a URL válida do vídeo.';
+                formErrorMsg.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                new URL(url);
+            } catch (_) {
+                formErrorMsg.textContent = 'Insira um link de URL válido (ex: https://...).';
+                formErrorMsg.classList.remove('hidden');
+                return;
+            }
+
+            const newCard = {
+                id: 'card-' + Date.now(),
+                title,
+                url
+            };
+
+            videoCards.push(newCard);
+            saveCards();
+            closeModal();
+            playCard(newCard);
+            showToast('Card adicionado e reproduzindo!');
+
+            setTimeout(() => {
+                cardsTrack.scrollTo({ left: cardsTrack.scrollWidth, behavior: 'smooth' });
+            }, 100);
+        });
+
+        // Inicialização
+        loadCards();
+        playCard(videoCards[0]);
+    </script>
+</body>
+</html>
